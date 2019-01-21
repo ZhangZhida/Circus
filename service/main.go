@@ -20,9 +20,9 @@ const (
 	POST_INDEX = "post" // ElasticSearch database
 	POST_TYPE  = "post" // ElasticSearch table
 
-	ES_URL = "http://35.196.190.175:9200" // ElasticSearch
+	ES_URL = CONFIG_ES_URL // your ElasticSearch endpoint
 
-	BUCKET_NAME = "zhida-post-around-image"
+	BUCKET_NAME = CONFIG_BUCKET_NAME // your GCS bucket name
 )
 
 type Location struct {
