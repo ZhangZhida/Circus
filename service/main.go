@@ -10,9 +10,14 @@ import (
 	"reflect"
 	"strconv"
 
+	"cloud.google.com/go/bigtable"
 	"cloud.google.com/go/storage"
+	jwtmiddleware "github.com/auth0/go-jwt-middleware"
+	jwt "github.com/dgrijalva/jwt-go"
+	"github.com/gorilla/mux"
 	"github.com/olivere/elastic"
 	"github.com/pborman/uuid"
+	"google.golang.org/api/option"
 )
 
 const (
@@ -20,9 +25,9 @@ const (
 	POST_INDEX = "post" // ElasticSearch database
 	POST_TYPE  = "post" // ElasticSearch table
 
-	ES_URL = CONFIG_ES_URL // your ElasticSearch endpoint
-
-	BUCKET_NAME = CONFIG_BUCKET_NAME // your GCS bucket name
+	ES_URL          = "http://34.73.54.29:9200" // your ElasticSearch endpoint
+	BUCKET_NAME     = "zhida-post-around-image" // your GCS bucket name
+	ENABLE_BIGTABLE = false                     // Big table are currently closed due to extreme high cost
 )
 
 type Location struct {
@@ -38,11 +43,25 @@ type Post struct {
 }
 
 func main() {
-	fmt.Println("Hello, world, started")
+	fmt.Println("Around service, started")
 	createIndexIfNotExist()
 
-	http.HandleFunc("/post", handlePost)
-	http.HandleFunc("/search", handleSearch)
+	// use jwdmiddleware to help send and protect the token
+	jwtMiddleware := jwtmiddleware.New(jwtmiddleware.Options{
+		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
+			return []byte(mySigningKey), nil
+		},
+		SigningMethod: jwt.SigningMethodHS256,
+	})
+
+	r := mux.NewRouter()
+
+	r.Handle("/post", jwtMiddleware.Handler(http.HandlerFunc(handlePost))).Methods("POST")
+	r.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(handleSearch))).Methods("GET")
+	r.Handle("/signup", http.HandlerFunc(handlerRegister)).Methods("POST")
+	r.Handle("/login", http.HandlerFunc(handlerLogin)).Methods("POST")
+
+	http.Handle("/", r)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
@@ -87,7 +106,11 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("Failed to save post to ElasticSearch %v.\n", err)
 		return
 	}
-	fmt.Printf("Saved one post to ElasticSearch: %s", p.Message)
+	fmt.Printf("Saved one post to ElasticSearch: %s\n", p.Message)
+
+	if ENABLE_BIGTABLE {
+		saveToBigTable(p, id)
+	}
 
 }
 
@@ -130,6 +153,7 @@ func createIndexIfNotExist() {
 		panic(err)
 	}
 
+	// check if the INDEX(post) exists
 	exists, err := client.IndexExists(POST_INDEX).Do(context.Background())
 	if err != nil {
 		panic(err)
@@ -152,6 +176,24 @@ func createIndexIfNotExist() {
 		if err != nil {
 			panic(err)
 		}
+	}
+
+	// check if the INDEX(user) exists
+	exists, err = client.IndexExists(USER_INDEX).Do(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	if !exists {
+		_, err = client.CreateIndex(USER_INDEX).Do(context.Background())
+		if err != nil {
+			panic(err)
+		}
+		// } else {
+		// 	_, err = client.DeleteIndex(USER_INDEX).Do(context.Background())
+		// 	if err != nil {
+		// 		panic(err)
+		// 	}
 	}
 }
 
@@ -248,5 +290,33 @@ func saveToGCS(r io.Reader, bucketName, objectName string) (*storage.ObjectAttrs
 
 	fmt.Printf("Image is saved to GCS: %s\n", attrs.MediaLink)
 	return attrs, nil
+}
+
+func saveToBigTable(p *Post, id string) {
+	ctx := context.Background()
+	const PROJECT_INSTANCE_ID = "around-229020"
+	const BIGTABLE_NAME = "around-post"
+	const TABLE_NAME = "post"
+
+	bt_client, err := bigtable.NewClient(ctx, PROJECT_INSTANCE_ID, BIGTABLE_NAME, option.WithCredentialsFile("/home/zhida/Downloads/Around-e9f61f68d73e.json"))
+	if err != nil {
+		panic(err)
+		return
+	}
+
+	tbl := bt_client.Open(TABLE_NAME)
+	mut := bigtable.NewMutation()
+	t := bigtable.Now()
+	mut.Set("post", "user", t, []byte(p.User))
+	mut.Set("post", "message", t, []byte(p.Message))
+	mut.Set("location", "lat", t, []byte(strconv.FormatFloat(p.Location.Lat, 'f', -1, 64)))
+	mut.Set("location", "lon", t, []byte(strconv.FormatFloat(p.Location.Lon, 'f', -1, 64)))
+
+	err = tbl.Apply(ctx, id, mut)
+	if err != nil {
+		panic(err)
+		return
+	}
+	fmt.Printf("Post is saved to BigTable: %s\n", p.Message)
 
 }
