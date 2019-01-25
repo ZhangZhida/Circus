@@ -75,6 +75,14 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
 
 	lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
 	lon, _ := strconv.ParseFloat(r.FormValue("lon"), 64)
+	message := r.FormValue("message")
+
+	// filter spam
+	if hasFilteredWord(&message) {
+		http.Error(w, "Sorry, the post contains filtered words. Please edit again. ", http.StatusBadRequest)
+		fmt.Printf("Sorry, the post contains filtered words. Please edit again. \n")
+		return
+	}
 
 	p := &Post{
 		User:    r.FormValue("user"),
@@ -122,12 +130,12 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	lat, _ := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
 	lon, _ := strconv.ParseFloat(r.URL.Query().Get("lon"), 64)
-	// range is optional
-	ran := DISTANCE
+	ran := DISTANCE // range is optional
 	if val := r.URL.Query().Get("range"); val != "" {
 		ran = val + "km"
 	}
 
+	// Read posts from ElasticSearch
 	posts, err := readFromES(lat, lon, ran)
 	if err != nil {
 		http.Error(w, "Failed to read post from ElasticSearch", http.StatusInternalServerError)
@@ -135,6 +143,7 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// convert post to JSON format
 	js, err := json.Marshal(posts)
 	if err != nil {
 		http.Error(w, "Failed to parse posts into JSON format", http.StatusInternalServerError)
@@ -249,7 +258,11 @@ func readFromES(lat, lon float64, ran string) ([]Post, error) {
 	var posts []Post
 	for _, item := range searchResult.Each(reflect.TypeOf(ptyp)) {
 		if p, ok := item.(Post); ok {
-			posts = append(posts, p)
+			// filter spam
+			if !hasFilteredWord(&p.Message) {
+				posts = append(posts, p)
+			}
+
 		}
 	}
 
